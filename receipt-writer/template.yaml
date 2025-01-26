@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  receipt-writer
+
+  Sample SAM Template for receipt-writer
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+    MemorySize: 128
+
+Parameters:
+  SlackSigningSecret:
+    Type: String
+    Description: Slack Signing Secret
+  SlackApiToken:
+    Type: String
+    Description: Slack API Token
+  BucketName:
+    Type: String
+    Description: S3 Bucket Name
+
+Resources:
+  EnqueueFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: enqueue/
+      Handler: app.lambda_handler
+      Runtime: ruby3.2
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !Ref MessageQueue
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          SLACK_SIGNING_SECRET: !Ref SlackSigningSecret
+          QUEUE_NAME: !Ref MessageQueue
+      Events:
+        Enqueue:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /enqueue
+            Method: post
+  DequeueFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dequeue/
+      Handler: app.lambda_handler
+      Runtime: ruby3.2
+      Timeout: 10
+      Policies:
+        - S3FullAccessPolicy:
+            BucketName: !Ref ReceiptBucket
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TZ: Asia/Tokyo
+          BUCKET_NAME: !Ref ReceiptBucket
+          SLACK_API_TOKEN: !Ref SlackApiToken
+      Events:
+        Dequeue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MessageQueue.Arn
+  WriteReceiptFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: write_receipt/
+      Handler: app.lambda_handler
+      Runtime: ruby3.2
+      Timeout: 10
+      Policies:
+        - S3FullAccessPolicy:
+            BucketName: !Ref BucketName
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TZ: Asia/Tokyo
+          SLACK_API_TOKEN: !Ref SlackApiToken
+      Events:
+        S3:
+          Type: S3
+          Properties:
+            Bucket: !Ref ReceiptBucket
+            Events: s3:ObjectCreated:*
+  MessageQueue:
+    Type: AWS::SQS::Queue
+  MessageQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Id: !Ref MessageQueue
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "SQS:*"
+            Resource: !GetAtt MessageQueue.Arn
+      Queues:
+        - !Ref MessageQueue
+  ReceiptBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+
+Outputs:
+  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
+  # Find out more about other implicit resources you can reference within SAM
+  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
+  EnqueueApi:
+    Description: "API Gateway endpoint URL for Prod stage for Enqueue function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/enqueue/"
